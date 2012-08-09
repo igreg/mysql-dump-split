@@ -1,10 +1,46 @@
 #!/usr/bin/env ruby
  
 require 'optparse'
+require 'zlib'
  
 tables = []
 ignore = []
 dumpfile = ""
+@compress = false
+
+def new_outfile(filename)
+  if @compress
+    file = Zlib::GzipWriter.open("#{filename}.gz")
+  else
+    file = File.new(filename, "w")
+  end
+  # It is always a good idea to update these variables before we start
+  file.puts("/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;")
+  file.puts("/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;")
+  file.puts("/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;")
+  file.puts("/*!40101 SET NAMES utf8 */;")
+  file.puts("/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;")
+  file.puts("/*!40103 SET TIME_ZONE='+00:00' */;")
+  file.puts("/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;")
+  file.puts("/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;")
+  file.puts("/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;")
+  file.puts("/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;")
+  file
+end
+
+def close_outfile(file)
+  if file and !file.closed?
+    # It is always a good idea to restore these variables once we're done
+    file.puts("/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;")
+    file.puts("/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;")
+    file.puts("/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;")
+    file.puts("/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;")
+    file.puts("/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;")
+    file.puts("/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;")
+    file.puts("/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;")
+    file.close
+  end
+end
 
 cmds = OptionParser.new do |opts|
   opts.banner = "Usage: split-mysql-dump.rb [options] [FILE]"
@@ -19,6 +55,10 @@ cmds = OptionParser.new do |opts|
   
   opts.on("-i", '--ignore-tables TABLES', Array, "Ignore these tables") do |i|
     ignore = i
+  end
+
+  opts.on("-c", '--compress', Array, "Compress split files with Gzip") do
+    @compress = true
   end
   
   opts.on_tail("-h", "--help") do
@@ -36,15 +76,6 @@ if dumpfile == ""
 end
 
 STDOUT.sync = true
- 
-class Numeric
-  def bytes_to_human
-    units = %w{B KB MB GB TB}
-    e = self > 0 ? (Math.log(self)/Math.log(1024)).floor : 0
-    s = "%.3f" % (to_f / 1024**e)
-    s.sub(/\.?0*$/, units[e])
-  end
-end
 
 if File.exist?(dumpfile)
   if dumpfile == $stdin
@@ -66,7 +97,7 @@ if File.exist?(dumpfile)
 
       # previous file should be closed
       if is_new_table
-        outfile.close if outfile and !outfile.closed?
+        close_outfile(outfile)
 
         puts("\n\nFound a new table: #{table}")
 
@@ -80,32 +111,35 @@ if File.exist?(dumpfile)
           starttime = Time.now
           linecount = 0
           tablecount += 1
-          outfile = File.new("#{db}_#{table}.sql", "w")
-          outfile.syswrite("USE `#{db}`;\n\n")
+          outfile = new_outfile("#{db}_#{table}.sql")
+          outfile.write("USE `#{db}`;\n\n")
         end
       end
     elsif line =~ /^-- Current Database: .(.+)./
       db = $1
       table = nil
-      outfile.close if outfile and !outfile.closed?
-      outfile = File.new("#{db}_1create.sql", "w")
+      close_outfile(outfile)
+      outfile = new_outfile("#{db}_1create.sql")
       puts("\n\nFound a new db: #{db}")
     elsif line =~ /^-- Position to start replication or point-in-time recovery from/
       db = nil
       table = nil
-      outfile.close if outfile and !outfile.closed?
-      outfile = File.new("1replication.sql", "w")
+      close_outfile(outfile)
+      outfile = new_outfile("1replication.sql")
       puts("\n\nFound replication data")
     end
  
     # Write line to outfile
     if outfile and !outfile.closed?
-      outfile.syswrite(line)
+      outfile.write(line)
       linecount += 1
       elapsed = Time.now.to_i - starttime.to_i + 1
-      print("    writing line: #{linecount} #{outfile.stat.size.bytes_to_human} in #{elapsed} seconds #{(outfile.stat.size / elapsed).bytes_to_human}/sec                 \r")
+      print("    writing line: #{linecount} in #{elapsed} seconds                 \r")
     end
   end
 end
+
+# Let's not forget to close the file
+close_outfile(outfile)
  
 puts
